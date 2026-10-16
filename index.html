@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SIAEF - Consola de Administración</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh}
+  button{font:inherit;cursor:pointer}
+  a{color:inherit;text-decoration:none}
+  #app-header{display:flex;justify-content:space-between;align-items:center;padding:1rem 2rem;background:#1e293b;border-bottom:1px solid #334155}
+  #telemetry-bar{display:flex;gap:.5rem}
+  #app-shell{display:grid;grid-template-columns:220px 1fr;min-height:calc(100vh - 64px)}
+  #app-nav{background:#1e293b;padding:1rem;border-right:1px solid #334155}
+  #app-nav ul{list-style:none;display:flex;flex-direction:column;gap:.5rem}
+  #app-nav a{display:block;padding:.6rem .8rem;border-radius:6px}
+  #app-nav a.active,#app-nav a:hover{background:#334155}
+  #app-view{padding:2rem}
+  .badge{padding:.25rem .6rem;border-radius:999px;font-size:.8rem;background:#334155}
+  .badge--ok{background:#065f46}.badge--warn{background:#92400e}.badge--err{background:#7f1d1d}
+  .btn{padding:.4rem .8rem;border:1px solid #334155;background:#1e293b;color:#e2e8f0;border-radius:6px}
+  .btn--active{background:#3b82f6;border-color:#3b82f6}
+  .cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:1rem}
+  .card{background:#1e293b;border:1px solid #334155;border-radius:10px;padding:1rem}
+  .card__header{display:flex;justify-content:space-between;align-items:center;margin-bottom:.5rem}
+  .card__meta{color:#94a3b8;font-size:.85rem;margin-bottom:.75rem}
+  .progress{margin-top:.5rem}
+  .progress__label{font-size:.8rem}
+  .progress__track{height:8px;background:#0f172a;border-radius:4px;overflow:hidden;margin-top:.25rem}
+  .progress__fill{height:100%;background:#3b82f6}
+  .progress__fill[data-level="mid"]{background:#f59e0b}
+  .progress__fill[data-level="high"]{background:#ef4444}
+  .metrics-grid,.telemetry-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:1rem;margin:1rem 0}
+  .metric-panel{background:#1e293b;padding:1rem;border-radius:10px;border:1px solid #334155}
+  .metric-panel__title{display:block;font-size:.8rem;color:#94a3b8}
+  .metric-panel__value{font-size:1.4rem}
+  .metric-panel__hint{color:#64748b}
+  .filters{display:flex;gap:.5rem;margin:1rem 0}
+  .view h1{margin-bottom:1rem}
+  .view--404{text-align:center;padding:4rem 1rem}
+  .view--404 h1{font-size:4rem}
+</style>
+</head>
+<body>
+<header id="app-header">
+  <h1>SIAEF</h1>
+  <div id="telemetry-bar">
+    <span id="net-status" class="badge">--</span>
+    <span id="screen-info" class="badge">--</span>
+  </div>
+</header>
+
+<div id="app-shell">
+  <nav id="app-nav">
+    <ul>
+      <li><a href="#/dashboard" data-link>Dashboard</a></li>
+      <li><a href="#/servers" data-link>Servidores</a></li>
+      <li><a href="#/telemetry" data-link>Telemetría</a></li>
+    </ul>
+  </nav>
+  <main id="app-view"></main>
+</div>
+
+<script type="module">
+/* ============ MÓDULO 3: RENDERER ============ */
+function el(tag, attrs = {}, children = []) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'on' && typeof v === 'object') for (const [e, h] of Object.entries(v)) node.addEventListener(e, h);
+    else if (k === 'dataset') Object.assign(node.dataset, v);
+    else if (k === 'class') node.className = v;
+    else if (v !== false && v != null) node.setAttribute(k, v);
+  }
+  for (const c of [].concat(children)) {
+    if (c == null) continue;
+    node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  }
+  return node;
+}
+function mount(container, node) {
+  const list = Array.isArray(node) ? node : [node];
+  container.replaceChildren(...list);
+}
+
+/* ============ MÓDULO 1: TELEMETRÍA ============ */
+const telemetryState = {
+  online: navigator.onLine,
+  connection: navigator.connection?.effectiveType ?? 'unknown',
+  screen: { width: screen.width, height: screen.height, dpr: devicePixelRatio },
+  memory: performance.memory ? { used: performance.memory.usedJSHeapSize, total: performance.memory.jsHeapSizeLimit } : null,
+};
+const telemetryListeners = new Set();
+function notifyTelemetry() { telemetryListeners.forEach(fn => fn({ ...telemetryState })); }
+function bindTelemetryEvents() {
+  addEventListener('online', () => { telemetryState.online = true; notifyTelemetry(); });
+  addEventListener('offline', () => { telemetryState.online = false; notifyTelemetry(); });
+  addEventListener('resize', () => {
+    telemetryState.screen = { width: screen.width, height: screen.height, dpr: devicePixelRatio };
+    notifyTelemetry();
+  });
+  setInterval(() => {
+    if (performance.memory) telemetryState.memory = { used: performance.memory.usedJSHeapSize, total: performance.memory.jsHeapSizeLimit };
+    notifyTelemetry();
+  }, 5000);
+}
+const Telemetry = {
+  init: bindTelemetryEvents,
+  getState: () => ({ ...telemetryState }),
+  subscribe(fn) { telemetryListeners.add(fn); fn({ ...telemetryState }); return () => telemetryListeners.delete(fn); },
+};
+
+/* ============ DATOS ============ */
+const SERVERS = [
+  { id:'srv-01', name:'API Gateway',     region:'us-east-1', cpu:62, ram:78, status:'online'  },
+  { id:'srv-02', name:'Auth Service',    region:'us-east-1', cpu:34, ram:45, status:'online'  },
+  { id:'srv-03', name:'Billing Worker',  region:'eu-west-1', cpu:91, ram:88, status:'warning' },
+  { id:'srv-04', name:'Reports Queue',   region:'eu-west-1', cpu:12, ram:30, status:'offline' },
+  { id:'srv-05', name:'Media Processor', region:'sa-east-1', cpu:55, ram:60, status:'online'  },
+  { id:'srv-06', name:'Cache Cluster',   region:'sa-east-1', cpu:47, ram:71, status:'online'  },
+];
+
+/* ============ COMPONENTES ============ */
+function StatusBadge(status) {
+  const map = { online:'badge--ok', warning:'badge--warn', offline:'badge--err' };
+  return el('span', { class:`badge ${map[status]||''}` }, status);
+}
+function ProgressBar(label, value) {
+  return el('div', { class:'progress' }, [
+    el('span', { class:'progress__label' }, `${label} ${value}%`),
+    el('div', { class:'progress__track' }, [
+      el('div', { class:'progress__fill', style:`width:${value}%`, 'data-level': value>85?'high':value>60?'mid':'low' }),
+    ]),
+  ]);
+}
+function ServerCard(server, { onClick } = {}) {
+  return el('article', { class:'card server-card', dataset:{ id:server.id }, on:{ click:()=>onClick?.(server) } }, [
+    el('header', { class:'card__header' }, [ el('h3', {}, server.name), StatusBadge(server.status) ]),
+    el('p', { class:'card__meta' }, `Región: ${server.region}`),
+    el('div', { class:'metrics' }, [ ProgressBar('CPU', server.cpu), ProgressBar('RAM', server.ram) ]),
+  ]);
+}
+function MetricsPanel(title, value, hint='') {
+  return el('div', { class:'metric-panel' }, [
+    el('span', { class:'metric-panel__title' }, title),
+    el('strong', { class:'metric-panel__value' }, String(value)),
+    hint && el('small', { class:'metric-panel__hint' }, hint),
+  ]);
+}
+
+/* ============ VISTAS ============ */
+class DashboardView {
+  constructor({ router }) { this.router = router; this._unsub = null; }
+  mount(outlet) {
+    const online = SERVERS.filter(s=>s.status==='online').length;
+    const warn = SERVERS.filter(s=>s.status==='warning').length;
+    const off = SERVERS.filter(s=>s.status==='offline').length;
+    const root = el('div', { class:'view view--dashboard' }, [
+      el('h1', {}, 'Panel General'),
+      el('section', { class:'metrics-grid' }, [
+        MetricsPanel('Servidores online', online, `de ${SERVERS.length}`),
+        MetricsPanel('En advertencia', warn, 'Requieren atención'),
+        MetricsPanel('Fuera de línea', off, 'Revisar inmediatamente'),
+      ]),
+      el('section', { class:'panel' }, [
+        el('h2', {}, 'Telemetría del cliente'),
+        el('div', { id:'dash-telemetry', class:'telemetry-grid' }),
+      ]),
+    ]);
+    mount(outlet, root);
+    this._unsub = Telemetry.subscribe(t => {
+      const box = document.getElementById('dash-telemetry');
+      if (!box) return;
+      mount(box, [
+        MetricsPanel('Estado red', t.online ? 'Online' : 'Offline'),
+        MetricsPanel('Conexión', t.connection),
+        MetricsPanel('Resolución', `${t.screen.width}×${t.screen.height}`),
+        MetricsPanel('DPR', t.screen.dpr),
+      ]);
+    });
+  }
+  destroy() { this._unsub?.(); }
+}
+
+class ServersView {
+  constructor({ router }) { this.router = router; this.filter = 'all'; }
+  mount(outlet) {
+    const grid = el('div', { class:'cards-grid', id:'servers-grid' });
+    const filters = el('div', { class:'filters' }, ['all','online','warning','offline'].map(f =>
+      el('button', { class:`btn ${f===this.filter?'btn--active':''}`, dataset:{ filter:f }, on:{ click:()=>{ this.filter=f; this._renderGrid(grid, filters); } } }, f)
+    ));
+    mount(outlet, el('div', { class:'view view--servers' }, [ el('h1', {}, 'Servidores'), filters, grid ]));
+    this._renderGrid(grid, filters);
+  }
+  _renderGrid(grid, filters) {
+    const list = this.filter==='all' ? SERVERS : SERVERS.filter(s=>s.status===this.filter);
+    filters.querySelectorAll('button').forEach(b => b.classList.toggle('btn--active', b.dataset.filter===this.filter));
+    mount(grid, list.map(s => ServerCard(s, { onClick: srv => console.log('Click:', srv.id) })));
+  }
+  destroy() {}
+}
+
+class TelemetryView {
+  constructor() { this._unsub = null; }
+  mount(outlet) {
+    mount(outlet, el('div', { class:'view view--telemetry' }, [
+      el('h1', {}, 'Telemetría en vivo'),
+      el('div', { class:'telemetry-grid', id:'telemetry-grid' }),
+    ]));
+    this._unsub = Telemetry.subscribe(t => {
+      const g = document.getElementById('telemetry-grid');
+      if (!g) return;
+      mount(g, [
+        MetricsPanel('Online', t.online ? '✅' : '❌'),
+        MetricsPanel('Conexión', t.connection),
+        MetricsPanel('Pantalla', `${t.screen.width}×${t.screen.height}`),
+        MetricsPanel('Device Pixel Ratio', t.screen.dpr),
+        t.memory && MetricsPanel('Heap usado', `${(t.memory.used/1048576).toFixed(1)} MB`, `de ${(t.memory.total/1048576).toFixed(0)} MB`),
+      ].filter(Boolean));
+    });
+  }
+  destroy() { this._unsub?.(); }
+}
+
+class NotFoundView {
+  constructor({ router }) { this.router = router; }
+  mount(outlet) {
+    mount(outlet, el('div', { class:'view view--404' }, [
+      el('h1', {}, '404'),
+      el('p', {}, 'Ruta no encontrada'),
+      el('button', { class:'btn', on:{ click:()=>this.router.navigate('/dashboard') } }, 'Volver al dashboard'),
+    ]));
+  }
+  destroy() {}
+}
+
+/* ============ MÓDULO 2: ROUTER ============ */
+class Router {
+  constructor({ routes, notFound, outlet }) {
+    this.routes = routes; this.notFound = notFound; this.outlet = outlet;
+    this.currentView = null; this._handler = this._handle.bind(this);
+  }
+  start() { addEventListener('hashchange', this._handler); this._handle(); }
+  stop() { removeEventListener('hashchange', this._handler); }
+  navigate(path) { if (location.hash !== `#${path}`) location.hash = path; }
+  _getPath() { const h = location.hash.slice(1) || '/dashboard'; return h.split('?')[0]; }
+  _handle() {
+    const path = this._getPath();
+    const View = this.routes[path] || this.notFound;
+    if (this.currentView?.destroy) this.currentView.destroy();
+    const view = new View({ router: this, params: { path } });
+    this.currentView = view;
+    view.mount(this.outlet);
+    document.querySelectorAll('[data-link]').forEach(a => a.classList.toggle('active', a.getAttribute('href') === `#${path}`));
+  }
+}
+
+/* ============ BOOTSTRAP ============ */
+Telemetry.init();
+Telemetry.subscribe(t => {
+  const net = document.getElementById('net-status');
+  const scr = document.getElementById('screen-info');
+  if (net) { net.textContent = t.online ? '🟢 Online' : '🔴 Offline'; net.className = `badge ${t.online?'badge--ok':'badge--err'}`; }
+  if (scr) scr.textContent = `${t.screen.width}×${t.screen.height} · DPR ${t.screen.dpr}`;
+});
+const router = new Router({
+  outlet: document.getElementById('app-view'),
+  routes: { '/dashboard': DashboardView, '/servers': ServersView, '/telemetry': TelemetryView },
+  notFound: NotFoundView,
+});
+router.start();
+document.addEventListener('click', e => {
+  const a = e.target.closest('[data-link]');
+  if (!a) return;
+  e.preventDefault();
+  router.navigate(a.getAttribute('href').slice(1));
+});
+</script>
+</body>
+</html>
